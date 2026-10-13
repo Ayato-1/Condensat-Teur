@@ -28,13 +28,31 @@ cppcheck:
     - |
       set -eu
 
-      cppcheck \
+      echo "Répertoire courant"
+      pwd
+      echo "Contenu du dépôt"
+      ls -la
+      echo "Sources C"
+      find src -maxdepth 1 -type f -name '*.c' -print
+      echo "Headers"
+      find include -maxdepth 1 -type f -name '*.h' -print
+      echo "Analyse Cppcheck"
+      find src include -maxdepth 1 -type f \
+        \( -name '*.c' -o -name '*.h' \) \
+        ! -path 'src/third_party/*' \
+        -print > /tmp/cppcheck-files.txt
+      if [ ! -s /tmp/cppcheck-files.txt ]; then
+        echo "ERREUR : aucun fichier C ou header trouvé."
+        exit 1
+      fi
+      xargs cppcheck \
         --enable=warning,performance,portability \
         --error-exitcode=1 \
         --inline-suppr \
         --suppress=missingIncludeSystem \
         -I include \
-        src/*.c include/*.h
+        < /tmp/cppcheck-files.txt
+
   rules:
     - changes:
         - src/*.c
