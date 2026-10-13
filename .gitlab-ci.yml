@@ -27,7 +27,6 @@ cppcheck:
   script:
     - |
       set -eu
-      set -- src/*.c include/*.h
 
       cppcheck \
         --enable=warning,performance,portability \
@@ -35,7 +34,7 @@ cppcheck:
         --inline-suppr \
         --suppress=missingIncludeSystem \
         -I include \
-        "$@"
+        src/*.c include/*.h
   rules:
     - changes:
         - src/*.c
