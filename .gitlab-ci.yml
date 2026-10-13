@@ -1,4 +1,4 @@
-# BLAKE3 est une dépendance tierce : src/third_party/blake3/.
+# BLAKE3 is a third-party dependency: src/third_party/blake3/.
 
 stages:
   - quality
@@ -115,9 +115,6 @@ build-clang:
       BLAKE3_DIR="src/third_party/blake3/c"
 
       mkdir -p "$BUILD_DIR"
-
-      # Clang utilise c2x pour la compatibilité avec les versions
-      # qui ne reconnaissent pas encore le nom c23.
       for source in src/*.c; do
         [ -f "$source" ] || continue
 
