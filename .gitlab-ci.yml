@@ -1,31 +1,149 @@
-# You can override the included template(s) by including variable overrides
-# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
-# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
-# Dependency Scanning customization: https://docs.gitlab.com/user/application_security/dependency_scanning/dependency_scanning_sbom/#customizing-analyzer-behavior
-# Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
-# Note that environment variables can be set in several places
-# See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
+# BLAKE3 est une dépendance tierce : src/third_party/blake3/.
+
 stages:
-- build
-- test
-- deploy
-- review
-- dast
-- staging
-- canary
-- production
-- incremental rollout 10%
-- incremental rollout 25%
-- incremental rollout 50%
-- incremental rollout 100%
-- performance
-- cleanup
-- secret-detection
-sast:
-  stage: test
-include:
-- template: Auto-DevOps.gitlab-ci.yml
+  - quality
+  - build
+  - test
+  - security
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
 variables:
-  SECRET_DETECTION_ENABLED: 'true'
+  GIT_DEPTH: "0"
+  SAST_EXCLUDED_PATHS: "src/third_party/**,third_party/**"
+
+cppcheck:
+  stage: quality
+  image: gcc:16.2
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends cppcheck
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - |
+      set -eu
+      set -- src/*.c include/*.h
+
+      cppcheck \
+        --enable=warning,performance,portability \
+        --error-exitcode=1 \
+        --inline-suppr \
+        --suppress=missingIncludeSystem \
+        -I include \
+        "$@"
+  rules:
+    - changes:
+        - src/*.c
+        - include/*.h
+        - .gitlab-ci.yml
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build-gcc:
+  stage: build
+  image: gcc:16.2
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends libssl-dev
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - |
+      set -eu
+
+      BUILD_DIR="build/ci-gcc"
+      BLAKE3_DIR="src/third_party/blake3/c"
+
+      mkdir -p "$BUILD_DIR"
+
+      for source in src/*.c; do
+        [ -f "$source" ] || continue
+
+        object="$BUILD_DIR/$(basename "${source%.c}").o"
+
+        gcc \
+          -std=c23 \
+          -Wall -Wextra -Wpedantic -Werror \
+          -Iinclude \
+          -I"$BLAKE3_DIR" \
+          -c "$source" \
+          -o "$object"
+      done
+
+      for source in blake3.c blake3_dispatch.c blake3_portable.c; do
+        gcc \
+          -std=c11 -O2 \
+          -DBLAKE3_NO_SSE2 \
+          -DBLAKE3_NO_SSE41 \
+          -DBLAKE3_NO_AVX2 \
+          -DBLAKE3_NO_AVX512 \
+          -I"$BLAKE3_DIR" \
+          -c "$BLAKE3_DIR/$source" \
+          -o "$BUILD_DIR/vendor_${source%.c}.o"
+      done
+
+      gcc "$BUILD_DIR"/*.o -lcrypto -o "$BUILD_DIR/t3c"
+
+      "$BUILD_DIR/t3c" --help || true
+  artifacts:
+    paths:
+      - build/ci-gcc/t3c
+    expire_in: 1 week
+
+build-clang:
+  stage: build
+  image: gcc:16.2
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends clang libssl-dev
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - |
+      set -eu
+
+      BUILD_DIR="build/ci-clang"
+      BLAKE3_DIR="src/third_party/blake3/c"
+
+      mkdir -p "$BUILD_DIR"
+
+      # Clang utilise c2x pour la compatibilité avec les versions
+      # qui ne reconnaissent pas encore le nom c23.
+      for source in src/*.c; do
+        [ -f "$source" ] || continue
+
+        object="$BUILD_DIR/$(basename "${source%.c}").o"
+
+        clang \
+          -std=c2x \
+          -Wall -Wextra -Wpedantic -Werror \
+          -Iinclude \
+          -I"$BLAKE3_DIR" \
+          -c "$source" \
+          -o "$object"
+      done
+
+      for source in blake3.c blake3_dispatch.c blake3_portable.c; do
+        clang \
+          -std=c11 -O2 \
+          -DBLAKE3_NO_SSE2 \
+          -DBLAKE3_NO_SSE41 \
+          -DBLAKE3_NO_AVX2 \
+          -DBLAKE3_NO_AVX512 \
+          -I"$BLAKE3_DIR" \
+          -c "$BLAKE3_DIR/$source" \
+          -o "$BUILD_DIR/vendor_${source%.c}.o"
+      done
+
+      clang "$BUILD_DIR"/*.o -lcrypto -o "$BUILD_DIR/t3c"
+
+# for test later
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
 secret_detection:
-  stage: secret-detection
+  stage: security
