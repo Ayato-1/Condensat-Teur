@@ -27,13 +27,22 @@ cppcheck:
   script:
     - |
       set -eu
+      set --
+      for source in src/*.c include/*.h; do
+        [ -f "$source" ] || continue
+        set -- "$@" "$source"
+      done
+      if [ "$#" -eq 0 ]; then
+        echo "Aucun fichier C ou header à analyser. Analyse ignorée."
+        exit 0
+      fi
       cppcheck \
         --enable=warning,performance,portability \
         --error-exitcode=1 \
         --inline-suppr \
         --suppress=missingIncludeSystem \
         -I include \
-        src/*.c include/*.h
+        "$@"
   rules:
     - changes:
         - src/*.c
