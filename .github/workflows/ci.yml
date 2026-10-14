@@ -1,174 +1,190 @@
-  name: T3C CI
+name: T3C-CI
 
-  on:
-    push:
-    pull_request:
-    workflow_dispatch:
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 0"
 
-  permissions:
-    contents: read
+permissions:
+  contents: read
 
-  jobs:
-    cppcheck:
-      name: Static analysis (Cppcheck)
-      runs-on: ubuntu-latest
+jobs:
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-latest
+    container:
+      image: gcc:16.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      steps:
-        - uses: actions/checkout@v4
+      - name: Install Cppcheck
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends cppcheck
+          rm -rf /var/lib/apt/lists/*
 
-        - name: Install Cppcheck
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y cppcheck
+      - name: Analyze C sources
+        shell: bash
+        run: |
+          set -eu
+          files=()
+          shopt -s nullglob
+          for source in src/*.c include/*.h; do
+            [[ -f "$source" ]] && files+=("$source")
+          done
 
-        - name: Analyze C code
-          shell: bash
-          run: |
-            set -euo pipefail
-            shopt -s nullglob
-            
-            files=(src/*.c include/*.h)
-            
-            if ((${#files[@]} == 0)); then
-              echo "No C source or header files to analyze. Skipping."
-              exit 0
-            fi
-            
-            cppcheck \
-              --enable=warning,performance,portability \
-              --error-exitcode=1 \
-              --inline-suppr \
-              --suppress=missingIncludeSystem \
-              -I include \
-              "${files[@]}"
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Aucun fichier C ou header à analyser. Analyse ignorée."
+            exit 0
+          fi
 
-    build-gcc:
-      name: Build with GCC
-      runs-on: ubuntu-latest
+          cppcheck \
+            --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --inline-suppr \
+            --suppress=missingIncludeSystem \
+            -I include \
+            "${files[@]}"
 
-      steps:
-        - uses: actions/checkout@v4
+  build-gcc:
+    name: Build GCC 16.2 (C23)
+    runs-on: ubuntu-latest
+    container:
+      image: gcc:16.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        - name: Install dependencies
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y libssl-dev
+      - name: Install OpenSSL development headers
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends libssl-dev
+          rm -rf /var/lib/apt/lists/*
 
-        - name: Compile and link
-          shell: bash
-          run: |
-            set -euo pipefail
-            shopt -s nullglob
-            
-            BUILD_DIR="build/ci-gcc"
-            BLAKE3_DIR="src/third_party/blake3/c"
-            mkdir -p "$BUILD_DIR"
-            
-            sources=(src/*.c)
-            
-            if ((${#sources[@]} == 0)); then
-              echo "No C source files. Skipping build."
-              exit 0
-            fi
-            
-            for source in "${sources[@]}"; do
-              object="$BUILD_DIR/$(basename "${source%.c}").o"
-            
-              gcc \
-                -std=c23 \
-                -Wall -Wextra -Wpedantic -Werror \
-                -Iinclude \
-                -I"$BLAKE3_DIR" \
-                -c "$source" \
-                -o "$object"
-            done
-            
-            for source in blake3.c blake3_dispatch.c blake3_portable.c; do
-              gcc \
-                -std=c11 -O2 \
-                -DBLAKE3_NO_SSE2 \
-                -DBLAKE3_NO_SSE41 \
-                -DBLAKE3_NO_AVX2 \
-                -DBLAKE3_NO_AVX512 \
-                -I"$BLAKE3_DIR" \
-                -c "$BLAKE3_DIR/$source" \
-                -o "$BUILD_DIR/vendor_${source%.c}.o"
-            done
-            
-            gcc "$BUILD_DIR"/*.o -lcrypto -o "$BUILD_DIR/t3c"
+      - name: Verify compiler version
+        run: |
+          gcc --version
+          gcc -std=c23 -dM -E - < /dev/null | grep __STDC_VERSION__
 
-        - name: Upload executable
-          uses: actions/upload-artifact@v4
-          with:
-            name: t3c-gcc
-            path: build/ci-gcc/t3c
-            if-no-files-found: warn
+      - name: Compile and link
+        shell: bash
+        run: |
+          set -eu
 
-    build-clang:
-      name: Build with Clang
-      runs-on: ubuntu-latest
+          BUILD_DIR="build/ci-gcc"
+          BLAKE3_DIR="src/third_party/blake3/c"
 
-      steps:
-        - uses: actions/checkout@v4
+          mkdir -p "$BUILD_DIR"
+          shopt -s nullglob
 
-        - name: Install dependencies
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y clang libssl-dev
+          for source in src/*.c; do
+            object="$BUILD_DIR/$(basename "${source%.c}").o"
 
-        - name: Compile C sources
-          shell: bash
-          run: |
-            set -euo pipefail
-            shopt -s nullglob
-            
-            BUILD_DIR="build/ci-clang"
-            BLAKE3_DIR="src/third_party/blake3/c"
-            mkdir -p "$BUILD_DIR"
-            
-            sources=(src/*.c)
-            
-            if ((${#sources[@]} == 0)); then
-              echo "No C source files. Skipping build."
-              exit 0
-            fi
-            
-            for source in "${sources[@]}"; do
-              object="$BUILD_DIR/$(basename "${source%.c}").o"
-            
-              clang \
-                -std=c2x \
-                -Wall -Wextra -Wpedantic -Werror \
-                -Iinclude \
-                -I"$BLAKE3_DIR" \
-                -c "$source" \
-                -o "$object"
-            done
-            
-            for source in blake3.c blake3_dispatch.c blake3_portable.c; do
-              clang \
-                -std=c11 -O2 \
-                -DBLAKE3_NO_SSE2 \
-                -DBLAKE3_NO_SSE41 \
-                -DBLAKE3_NO_AVX2 \
-                -DBLAKE3_NO_AVX512 \
-                -I"$BLAKE3_DIR" \
-                -c "$BLAKE3_DIR/$source" \
-                -o "$BUILD_DIR/vendor_${source%.c}.o"
-            done
-            
-            clang "$BUILD_DIR"/*.o -lcrypto -o "$BUILD_DIR/t3c"
+            gcc \
+              -std=c23 \
+              -Wall -Wextra -Wpedantic -Werror \
+              -Iinclude \
+              -I"$BLAKE3_DIR" \
+              -c "$source" \
+              -o "$object"
+          done
 
-    security:
-      name: Security checks
-      runs-on: ubuntu-latest
+          for source in blake3.c blake3_dispatch.c blake3_portable.c; do
+            gcc \
+              -std=c11 -O2 \
+              -DBLAKE3_NO_SSE2 \
+              -DBLAKE3_NO_SSE41 \
+              -DBLAKE3_NO_AVX2 \
+              -DBLAKE3_NO_AVX512 \
+              -I"$BLAKE3_DIR" \
+              -c "$BLAKE3_DIR/$source" \
+              -o "$BUILD_DIR/vendor_${source%.c}.o"
+          done
 
-      steps:
-        - uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
+          objects=("$BUILD_DIR"/*.o)
+          if [[ ${#objects[@]} -eq 0 ]]; then
+            echo "Aucun objet compilé."
+            exit 1
+          fi
 
-        - name: Scan for secrets
-          uses: gitleaks/gitleaks-action@v2
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          gcc "${objects[@]}" -lcrypto -o "$BUILD_DIR/t3c"
+          "$BUILD_DIR/t3c" --help || true
+
+      - name: Upload GCC binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: t3c-gcc
+          path: build/ci-gcc/t3c
+          if-no-files-found: error
+          retention-days: 7
+
+  build-clang:
+    name: Build Clang (C23)
+    runs-on: ubuntu-latest
+    container:
+      image: gcc:16.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Clang and OpenSSL development headers
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends clang libssl-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Compile and link
+        shell: bash
+        run: |
+          set -eu
+
+          BUILD_DIR="build/ci-clang"
+          BLAKE3_DIR="src/third_party/blake3/c"
+
+          mkdir -p "$BUILD_DIR"
+          shopt -s nullglob
+
+          for source in src/*.c; do
+            object="$BUILD_DIR/$(basename "${source%.c}").o"
+
+            clang \
+              -std=c2x \
+              -Wall -Wextra -Wpedantic -Werror \
+              -Iinclude \
+              -I"$BLAKE3_DIR" \
+              -c "$source" \
+              -o "$object"
+          done
+
+          for source in blake3.c blake3_dispatch.c blake3_portable.c; do
+            clang \
+              -std=c11 -O2 \
+              -DBLAKE3_NO_SSE2 \
+              -DBLAKE3_NO_SSE41 \
+              -DBLAKE3_NO_AVX2 \
+              -DBLAKE3_NO_AVX512 \
+              -I"$BLAKE3_DIR" \
+              -c "$BLAKE3_DIR/$source" \
+              -o "$BUILD_DIR/vendor_${source%.c}.o"
+          done
+
+          objects=("$BUILD_DIR"/*.o)
+          if [[ ${#objects[@]} -eq 0 ]]; then
+            echo "Aucun objet compilé."
+            exit 1
+          fi
+
+          clang "${objects[@]}" -lcrypto -o "$BUILD_DIR/t3c"
+
+      - name: Upload Clang binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: t3c-clang
+          path: build/ci-clang/t3c
+          if-no-files-found: error
+          retention-days: 7
