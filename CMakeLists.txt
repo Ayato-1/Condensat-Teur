@@ -18,6 +18,4 @@ add_executable(projet
         include/hashtable.h
         include/dict.h
         src/t3c_format.c
-        include/t3c_format.h
-        src/blake3.c
-        include/blake3.h)
+        include/t3c_format.h)
